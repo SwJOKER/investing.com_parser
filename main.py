@@ -1,13 +1,14 @@
+import os.path
 import cloudscraper
-from bs4 import BeautifulSoup
 import csv
 import datetime
 import json
-import os
 import logging
-
-
-titles_csv = 'date,time,country_id,importance,event_text,actual,forecast,previous\n'
+import asyncio
+from aiocfscrape import CloudflareScraper
+import utils
+from countries import Countries, NotInitCountriesEx
+from utils import handle_answer, get_logger, get_date_segments, get_continue_date
 
 
 headers = {
@@ -19,138 +20,7 @@ headers = {
     }
 
 
-class StopRequestEx(Exception):
-    def __init__(self):
-        Exception.__init__(self, 'All data recieved')
-
-
-class Countries:
-    """Импорт списка стран с сайта в csv"""
-    dict = {}
-    codes = []
-
-    @classmethod
-    def init(cls, csv_path):
-        Countries.csv_path = csv_path
-        if not os.path.exists(Countries.csv_path):
-            Countries.countries_to_csv()
-        Countries.init_countries_dict()
-        Countries.codes = Countries.get_country_codes()
-
-    @classmethod
-    def countries_to_csv(cls):
-        scraper = cloudscraper.create_scraper()
-        page_text = scraper.get('https://www.investing.com/economic-calendar/').text
-        try:
-            with open(Countries.csv_path, 'w', encoding='UTF-8', newline='') as file:
-                soup = BeautifulSoup(page_text, features='lxml')
-                countries_data = soup.find('ul', class_='countryOption').find_all('li')
-                csv_w = csv.writer(file)
-                csv_w.writerow(['Title','Code'])
-                for country in countries_data:
-                    country_id = country.find('input').get('value')
-                    # Срез убирает паразитный символ в начале строки
-                    csv_w.writerow([country.text[1:], country_id])
-        except:
-            os.remove(Countries.csv_path)
-
-    @classmethod
-    def init_countries_dict(cls):
-        with open(Countries.csv_path, 'r', encoding='UTF-8') as file:
-            file.readline() #пропустить строку заголовка
-            reader = csv.reader(file)
-            for x in reader:
-                print(x)
-                Countries.dict[x[0]] = int(x[1])
-
-    @classmethod
-    def get_country_codes(cls):
-        with open(Countries.csv_path, 'r', encoding='UTF-8') as file:
-            file.readline() #пропустить строку заголовка
-            reader = csv.reader(file)
-            codes = [int(x[1]) for x in reader]
-            return codes
-
-
-def get_date_time(row):
-    date_time_raw = row.get('data-event-datetime', None)
-    if date_time_raw:
-        date_time_formatted = datetime.datetime.strptime(date_time_raw, '%Y/%m/%d %H:%M:%S')
-        date = date_time_formatted.strftime('%Y-%m-%d')
-        time = date_time_formatted.strftime('%H:%M:%S')
-    else:
-        date = get_date_time.date
-        time = row.find('td', class_='first left').text
-    return date, time
-
-
-def get_country_id(row):
-    span = row.find('span')
-    if 'ceFlags' in span.get('class'):
-        return Countries.dict[span.get('title')]
-
-
-def get_importance(row):
-    tds = row.find_all('td')
-    target = tds[2]
-    result = len(target.find_all('i', class_='grayFullBullishIcon'))
-    if not result:
-        try:
-            result = target.find('span').text
-        except AttributeError:
-            result = ''
-    return result
-
-
-def get_event_text(row):
-    res = row.find('td', class_='left event').text
-    return res.strip()
-
-
-def get_all_data(row):
-    date = ''
-    time = ''
-    country_id = ''
-    importance = ''
-    actual = ''
-    forecast = ''
-    previous = ''
-    event = ''
-    if not row.has_attr('id'):
-        timestamp = int(row.find('td', class_='theDay').get('id')[6:])
-        get_date_time.date = datetime.date.fromtimestamp(timestamp)
-    else:
-        event_id = row.attrs['id'].split('_')[1]
-        event_text = get_event_text(row)
-        date, time = get_date_time(row)
-        country_id = get_country_id(row)
-        importance = get_importance(row)
-        get_event_text(row)
-        tds = row.find_all('td')
-        for td in tds:
-            if td.has_attr('id'):
-                if td.get('id').startswith('eventActual'):
-                    actual = td.text.replace('\xa0', '')
-                if td.get('id').startswith('eventForecast'):
-                    forecast = td.text.replace('\xa0', '')
-                if td.get('id').startswith('eventPrevious'):
-                    previous = td.text.replace('\xa0', '')
-        return [date, time, country_id, importance, event_text, actual, forecast, previous]
-
-
-def handle_answer(page_html, csv_file):
-    writer = csv.writer(csv_file)
-    soup = BeautifulSoup(page_html, 'lxml')
-    trs = soup.find_all('tr')
-    rows = []
-    for tr in trs:
-        if res := get_all_data(tr):
-            rows.append(res)
-    for row in rows:
-        writer.writerow(row)
-
-
-def get_page(page_num, date_from='1970-01-01', date_to=None):
+def get_page_json(page_num, date_from='1970-01-01', date_to=None):
     today_date_str = datetime.datetime.now().strftime('%Y-%m-%d')
     url = 'https://www.investing.com/economic-calendar/Service/getCalendarFilteredData'
     data = {
@@ -168,61 +38,85 @@ def get_page(page_num, date_from='1970-01-01', date_to=None):
         if response.status_code != 200:
             raise Exception(f'Response code: {response.status_code}')
         json_response = json.loads(response.text)
-    if not json_response['pids']:
-        raise StopRequestEx
-    return json_response['data']
+    return json_response
 
 
-def get_continue_date(csv_path):
-    last_date = '1970-01-01'
-    if os.path.exists(csv_path):
-        with open(csv_path, 'r', encoding='UTF-8') as csv_f:
-            lines = csv_f.readlines()[1:]
-            if not lines:
-                return last_date
-            n = 1
-            while not last_date:
-                last_date = lines[-n].split(',')[0]
-                n += 1
-        with open(csv_path, 'w', encoding='UTF-8') as csv_f:
-            csv_f.write(titles_csv)
-            for line in lines:
-                if line.split(',')[0] != last_date:
-                    csv_f.write(line)
-    else:
-        with open(csv_path, 'w', encoding='UTF-8') as csv_f:
-            csv_f.write(titles_csv)
-    return last_date
+async def aio_get_events(date_from, date_to = None, csv_file = None):
+    today_date_str = datetime.datetime.now().strftime('%Y-%m-%d')
+    if not csv_file:
+        csv_file = f'{date_from}.csv'
+    url = 'https://www.investing.com/economic-calendar/Service/getCalendarFilteredData'
+    data = {
+        'dateFrom': date_from,
+        'dateTo': today_date_str if not date_to else date_to,
+        'timeZone': '8',
+        'timeFilter': 'timeRemain',
+        'currentTab': 'custom',
+        'submitFilters': '1',
+        'limit_from': '0',
+        'country[]': Countries.codes,
+    }
+    async with CloudflareScraper() as session:
+        while True:
+            async with session.post(url, data=data, headers=headers) as response:
+                txt = await response.text()
+                jsn = json.loads(txt)
+                pids = jsn['pids']
+                if not pids:
+                    break
+                try:
+                    with open(csv_file, 'a', encoding='UTF-8', newline='') as file:
+                        print(data['dateFrom'], data['dateTo'], data['limit_from'])
+                        writer = csv.writer(file)
+                        parsed_data_rows = handle_answer(jsn['data'])
+                        writer.writerows(parsed_data_rows)
+                except NotInitCountriesEx:
+                    raise NotInitCountriesEx
+                except Exception as e:
+                    log = logging.getLogger('parser')
+                    log.error(f'{data["dateFrom"]}, {data["dateTo"]}, {data["limit_from"]}')
+                    log.error(e)
+                data['limit_from'] = int(data['limit_from']) + 1
 
 
-def get_logger():
-    log = logging.getLogger('Parser')
-    file_handler = logging.FileHandler('parser.log', encoding='UTF-8')
-    file_handler.setLevel(logging.WARNING)
-    info_handler = logging.StreamHandler()
-    info_handler.setLevel(logging.WARNING)
-    log.addHandler(file_handler)
-    log.addHandler(info_handler)
-    return log
+async def aiostart(date_from, date_to, threads = 5, output_csv='result.csv'):
+    dates_from, dates_to = get_date_segments(threads, date_from, date_to)
+    tasks = []
+    for f,t in zip(dates_from, dates_to):
+        tasks.append(aio_get_events(f, t))
+    await asyncio.gather(*tasks)
+    utils.unite_csvs(out_file_name=output_csv, delete_source=False)
+
+
+def sync_start(date_from='1970-01-01', date_to='', csv_result='result.csv', csv_countries='countries.csv'):
+    log = get_logger()
+    Countries.load(csv_countries)
+    query_page_index = 0
+    if os.path.exists(csv_result):
+        date_from = get_continue_date(csv_result)
+    with open(csv_result, 'a', encoding='UTF-8', newline='') as output_csv:
+        writer = csv.writer(output_csv)
+        while True:
+            try:
+                print('Page ' + str(query_page_index))
+                answer = get_page_json(query_page_index, date_from, date_to)
+                if not answer.get('pids', None):
+                    print('Finished')
+                    break
+                parsed_data = handle_answer(answer['data'])
+                writer.writerows(parsed_data)
+            except Exception as e:
+                log.warning(f'Page not processed: {query_page_index}', exc_info=e)
+            query_page_index += 1
+
+
+if __name__ == '__min__':
+    sync_start(date_from='1970-01-01', date_to='2022-11-01', csv_result='result.csv', csv_countries='countries.csv')
 
 
 if __name__ == '__main__':
-    log = get_logger()
-    try:
-        Countries.init('countries.csv')
-        query_page_index = 0
-        result_csv_path = 'res.csv'
-        date_from = get_continue_date(result_csv_path)
-        with open('res.csv', 'a', encoding='UTF-8', newline='') as output_csv:
-            while True:
-                try:
-                    answer = get_page(query_page_index, date_from)
-                    print('Page ' + str(query_page_index))
-                    handle_answer(answer, output_csv)
-                except StopRequestEx:
-                    raise StopRequestEx
-                except Exception as e:
-                    log.warning(f'Page not processed: {query_page_index}', exc_info=e)
-                query_page_index += 1
-    except StopRequestEx:
-        print('Finish')
+    get_logger()
+    Countries.load('countries.csv')
+    asyncio.run(aiostart('1970-01-01', '2022-11-01', output_csv='results.csv'))
+
+
