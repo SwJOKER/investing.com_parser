@@ -46,8 +46,9 @@ def get_event_text(row):
 class Event:
     order = 'date,time,country_id,importance,event_text,actual,forecast,previous'
 
-    def __init__(self, /, date='', time='', country_name='', importance='', event_text='', actual='', forecast='', previous='',
-                 event_id=''):
+    def __init__(self, /, date: str = '', time: str = '', country_name: str = '', importance: str = '',
+                 event_text: str = '', actual: str = '', forecast: str = '', previous: str = '',
+                 event_id: str = ''):
         self.date = date
         self.time = time
         self.country_name = country_name
@@ -60,14 +61,14 @@ class Event:
         self.country_id = Countries.get_country_code(self.country_name)
 
 
-    def get_csv_row(self):
+    def get_csv_row(self) -> str:
         columns_names = Event.order.split(',')
         row = [str(self.__dict__[col]) for col in columns_names]
         return row
 
 
 
-def get_event(row):
+def get_event(row: str) -> Event:
     actual = ''
     forecast = ''
     previous = ''

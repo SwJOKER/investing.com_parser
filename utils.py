@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup
 import re
 
 
-def get_logger():
+def get_logger() -> logging.Logger:
     log = logging.getLogger('parser')
     file_handler = logging.FileHandler('parser.log', encoding='UTF-8')
     file_handler.setLevel(logging.WARNING)
@@ -17,7 +17,7 @@ def get_logger():
     return log
 
 
-def get_continue_date(csv_path):
+def get_continue_date(csv_path: str) -> str:
     last_date = None
     if os.path.exists(csv_path):
         with open(csv_path, 'r', encoding='UTF-8') as csv_f:
@@ -55,7 +55,7 @@ def get_date_segments(segments: int, dates_from: str, date_to: str) -> tuple[lis
     return dates_from, dates_to
 
 
-def handle_answer(page_html):
+def handle_answer(page_html: str) -> list[str]:
     soup = BeautifulSoup(page_html, 'lxml')
     trs = soup.find_all('tr')
     rows = []
@@ -65,7 +65,7 @@ def handle_answer(page_html):
     return rows
 
 
-def unite_csvs(regex='\d{4}-\d{2}-\d{2}.csv',out_file_name='results.csv', directory='', delete_source=True):
+def unite_csvs(regex='\d{4}-\d{2}-\d{2}.csv',out_file_name='results.csv', directory='', delete_source=True) -> None:
     files = []
     reg = re.compile(regex)
     if not directory:
